@@ -1,0 +1,96 @@
+import cv2
+import numpy as np
+import os
+import sqlite3
+from datetime import datetime
+
+# Initialize the SQLite database
+def init_db():
+    conn = sqlite3.connect("attendance.db")
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS attendance (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT,
+                        time TIMESTAMP
+                      )''')
+    conn.commit()
+    conn.close()
+
+# Mark attendance in the database
+def mark_attendance(name):
+    conn = sqlite3.connect("attendance.db")
+    cursor = conn.cursor()
+    now = datetime.now()
+    cursor.execute("INSERT INTO attendance (name, time) VALUES (?, ?)", (name, now))
+    conn.commit()
+    conn.close()
+
+# Load known faces and labels
+def load_labels(file_path):
+    if not os.path.exists(file_path):
+        print(f"Error: The file '{file_path}' does not exist.")
+        return [], []
+
+    known_faces = []
+    known_face_names = []
+
+    with open(file_path, "r") as f:
+        for line in f:
+            name, img_path = line.strip().split(",")
+            if not os.path.exists(img_path):
+                print(f"Warning: Image path '{img_path}' does not exist. Skipping.")
+                continue
+
+            image = cv2.imread(img_path)
+            gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+            faces = face_cascade.detectMultiScale(gray_image, scaleFactor=1.1, minNeighbors=5)
+            for (x, y, w, h) in faces:
+                face_roi = gray_image[y:y + h, x:x + w]
+                known_faces.append(face_roi)
+                known_face_names.append(name)
+
+    return known_faces, known_face_names
+
+# Initialize known faces and labels
+labels_file = "labels.txt"
+known_faces, known_face_names = load_labels(labels_file)
+
+# Start the video capture
+cap = cv2.VideoCapture(0)
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+init_db()
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5)
+
+    for (x, y, w, h) in faces:
+        face_roi = gray_frame[y:y + h, x:x + w]
+        name = "Unknown"
+
+        for known_face, known_name in zip(known_faces, known_face_names):
+            res = cv2.matchTemplate(face_roi, known_face, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            if max_val > 0.6:  # Threshold for recognition
+                name = known_name
+                mark_attendance(name)
+                break
+
+        # Draw a rectangle around the face
+        color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+        cv2.putText(frame, name, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+    cv2.imshow("Attendance System", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
